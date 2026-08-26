@@ -1,0 +1,12 @@
+# The T7 holds a full mirror. GitHub only receives notes and common note images.
+*
+!*/
+!.gitignore
+!*.md
+!*.markdown
+!*.png
+!*.jpg
+!*.jpeg
+!*.webp
+!*.gif
+!*.svg
