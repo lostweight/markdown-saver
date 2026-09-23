@@ -1890,6 +1890,74 @@ while(没到达最大迭代次数):
 
 ---
 
+# slam 建图算法他的只是单单保存一张 map.png 而已吗？还是说不只这个？保存下来的文件有什么作用？
+
+是的，**不止两个，一共 4 个文件 + 1 个目录**(代码里 `SaveMap` 一次写出来的):
+
+| 文件              | 内容                                                                                                        | 谁要用它               |
+| --------------- | --------------------------------------------------------------------------------------------------------- | ------------------ |
+| `<名字>.pbstream` | **数据版**: 所有 submap 的栅格 + 每块的位姿 + 轨迹节点 (连 "未完成的 submap" 也一起存:`include_unfinished_submaps=true`)            | **扩展建图、定位导航、回环优化** |
+| `<名字>.png`      | 图片版：最终地图位图 (给 App、给人看)                                                                                    | App 显示、在地图上画区域     |
+| `<名字>_temp.png` | **同一张图再写一份**(代码里就是从同一个 `colorMat` 连续写出的两份 → 实测 `hh.png` 和 `hh_temp.png` 字节数一模一样 2377 B,`mm` 两张都是 18942 B) | 当作过程 / 临时副本        |
+| `<名字>.yaml`     | png 的**元数据**:`image / resolution / width / height / origin[x,y,yaw] / negate`                             | 任何人想读懂 png 都要它     |
+| `MappingBag/`   | 建图时的原始数据包 (雷达 / 里程计), 可重放                                                                                 | 重新处理 / 复现          |
+
+---
+
+## 只留 png 会怎样 —— 基本就废了
+
+代码里的判断很直白:
+
+```cpp
+// slam_manager.cpp
+if (!std::filesystem::exists(folder + map_name + ".pbstream")) {
+    LOG(ERROR) << "LoadMapBackend: pbstream not exist for map " << map_name;   // 直接失败
+}
+...
+extend && pbstream_exists   // 扩展建图:pbstream 不存在就走"新建地图",接着往下加不了
+```
+
+所以只留 png:
+
+| 想做                     | 结果                                    |
+| ---------------------- | ------------------------------------- |
+| **扩展建图**(在旧地图上接着加)     | ❌ 条件不成立 → 当新图处理，新的画在另一张图上             |
+| **定位 / 导航**(拿这张图跑)     | ❌ 报 `pbstream not exist for map <名字>` |
+| **回环优化**               | ❌ 没有位姿图，无从优化                          |
+| App 显示地图、在地图上画清扫区 / 禁区 | ✅ 勉强能用 (但这只需要 png)                    |
+
+**而且 png 单独留着也没用，必须配 `.yaml`** —— 不然没人知道 "1 个像素等于几米、原点在哪个角", 这张图在几何上就是无意义的。
+
+---
+
+## 反过来:pbstream 才是 "母本",png 是派生物
+
+- 定位、扩展、优化 ——**全都只需要 pbstream**;
+- png 可以从 pbstream **重新生成**: 代码里有专门的服务 `slam/save_map_from_pbstream`;
+- 保存时的顺序也是 pbstream 先写 (进度 30→45),png/yaml 后写 (55→70)。
+
+所以严格说:**pbstream 是母本，png + yaml 是从它派生出来的 "展示件"**。删 png 还能救，删 pbstream 就真回不去了。
+
+---
+
+## 有一点跟你的视觉功能直接相关
+
+视觉存的那份 JSON 里，坐标是:
+
+```json
+{ "coordinateFrame": "map_image_pixel", "partitionSide": [{x, y, theta}, …] }
+```
+
+**它存的是 "地图图片的像素坐标"—— 也就是说它依赖 png + yaml。** 如果哪天 png 被重新生成、分辨率或 origin 变了，旧的 `VisualRestrictedZone/*.json` 就会**整体错位**(因为像素和米的换算关系变了)。这也是为什么那两个文件必须一起留着、不能只要一个。
+
+顺带补一个扩展建图的细节:`is_new_map == false`(目录已存在) 时，代码会**先读旧 yaml、算出 "零点在地图里的坐标", 再把新旧地图对齐合并**(日志 `Update map data...` / `Update map data done`)。所以扩展建图不仅要用 pbstream, 也要用旧的 png + yaml 来对齐。
+
+---
+
+---
+
+
+
 # 程序到底编译后运行的整体流程是什么？编译过后  CPU 要怎么执行这个程序呢？
 
 ---
